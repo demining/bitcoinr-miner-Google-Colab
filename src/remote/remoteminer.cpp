@@ -25,6 +25,7 @@
 #include <ctime>
 #include <cstring>
 #include <map>
+#include <sstream>
 
 #ifdef _WIN32
 	#include <winsock2.h>
@@ -42,7 +43,7 @@ const int BITCOINMINERREMOTE_HASHESPERMETA=2000000;
 bool BitcoinMinerRemoteServer::m_wsastartup=false;
 #endif
 
-RemoteClientConnection::RemoteClientConnection(const SOCKET sock, sockaddr_storage &addr, const int addrlen):m_socket(sock),m_addr(addr),m_addrlen(addrlen),m_gotclienthello(false),m_connecttime(time(0)),m_lastactive(time(0)),m_lastverifiedmetahash(0),m_nextblockid(1)
+RemoteClientConnection::RemoteClientConnection(const SOCKET sock, sockaddr_storage &addr, const int addrlen):m_socket(sock),m_addr(addr),m_addrlen(addrlen),m_gotclienthello(false),m_connecttime(time(0)),m_lastactive(time(0)),m_lastverifiedmetahash(0),m_nextblockid(1),m_verifiedmetahashcount(0)
 {
 	m_tempbuffer.resize(4096,0);
 }
@@ -264,50 +265,17 @@ const bool RemoteClientConnection::GetSentWorkByID(const int64 id, sentwork **wo
 
 const bool RemoteClientConnection::MessageReady() const
 {
-	if(m_receivebuffer.size()>3 && m_receivebuffer[0]==REMOTEMINER_PROTOCOL_VERSION)
-	{
-		unsigned short messagesize=(m_receivebuffer[1] << 8) & 0xff00;
-		messagesize|=(m_receivebuffer[2]) & 0xff;
-
-		if(m_receivebuffer.size()>=3+messagesize)
-		{
-			return true;
-		}
-	}
-
-	return false;
+	return RemoteMinerMessage::MessageReady(m_receivebuffer);
 }
 
 const bool RemoteClientConnection::ProtocolError() const
 {
-	if(m_receivebuffer.size()>0 && m_receivebuffer[0]!=REMOTEMINER_PROTOCOL_VERSION)
-	{
-		return true;
-	}
-	else
-	{
-		return false;
-	}
+	return RemoteMinerMessage::ProtocolError(m_receivebuffer);
 }
 
 const bool RemoteClientConnection::ReceiveMessage(RemoteMinerMessage &message)
 {
-	if(MessageReady())
-	{
-		unsigned short messagesize=(m_receivebuffer[1] << 8) & 0xff00;
-		messagesize|=(m_receivebuffer[2]) & 0xff;
-
-		std::string objstr(m_receivebuffer.begin()+3,m_receivebuffer.begin()+3+messagesize);
-		json_spirit::Value value;
-		bool jsonread=json_spirit::read(objstr,value);
-		if(jsonread)
-		{
-			message=RemoteMinerMessage(value);
-		}
-		m_receivebuffer.erase(m_receivebuffer.begin(),m_receivebuffer.begin()+3+messagesize);
-		return jsonread;
-	}
-	return false;
+	return RemoteMinerMessage::ReceiveMessage(m_receivebuffer,message);
 }
 
 void RemoteClientConnection::SendMessage(const RemoteMinerMessage &message)
@@ -322,6 +290,7 @@ void RemoteClientConnection::SetWorkVerified(sentwork &work)
 		if((*i).m_block==work.m_block && (*i).m_metahashes.size()>0)
 		{
 			(*i).m_metahashes[(*i).m_metahashes.size()-1].m_verified=true;
+			m_verifiedmetahashcount++;
 			return;
 		}
 	}
@@ -366,7 +335,7 @@ const bool RemoteClientConnection::SocketSend()
 	return sent;
 }
 
-BitcoinMinerRemoteServer::BitcoinMinerRemoteServer():m_bnExtraNonce(0),m_startuptime(0),m_generatedcount(0)
+BitcoinMinerRemoteServer::BitcoinMinerRemoteServer():m_bnExtraNonce(0),m_startuptime(0),m_generatedcount(0),m_distributiontype("connected")
 {
 #ifdef _WIN32
 	if(m_wsastartup==false)
@@ -377,6 +346,25 @@ BitcoinMinerRemoteServer::BitcoinMinerRemoteServer():m_bnExtraNonce(0),m_startup
 	}
 #endif
 	ReadBanned("banned.txt");
+
+	if(mapArgs.count("-distributiontype")>0)
+	{
+		m_distributiontype=mapArgs["-distributiontype"];
+		if(m_distributiontype!="connected" && m_distributiontype!="contributed")
+		{
+			m_distributiontype="connected";
+		}
+	}
+	printf("BitcoinMinerRemoteServer distribution method %s\n",m_distributiontype.c_str());
+
+	LoadContributedHashes();
+
+	if(mapArgs.count("-resethashescontributed")>0)
+	{
+		m_previoushashescontributed.clear();
+		m_currenthashescontributed.clear();
+	}
+
 };
 
 BitcoinMinerRemoteServer::~BitcoinMinerRemoteServer()
@@ -395,7 +383,101 @@ BitcoinMinerRemoteServer::~BitcoinMinerRemoteServer()
 		(*i)->Disconnect();
 		delete (*i);
 	}
+
+	SaveContributedHashes();
 };
+
+void BitcoinMinerRemoteServer::AddDistributionFromConnected(CBlock *pblock, CBlockIndex *pindexPrev, int64 nFees)
+{
+	std::map<uint160,int64> addressamountmap;
+
+	// add output for each connected client proportional to their khash
+	for(std::vector<RemoteClientConnection *>::const_iterator i=m_clients.begin(); i!=m_clients.end(); i++)
+	{
+		uint160 ch=0;
+		if((*i)->GetRequestedRecipientAddress(ch))
+		{
+			if((*i)->GetCalculatedKHashRateFromMetaHash()>0 && GetAllClientsCalculatedKHashFromMeta()>0)
+			{
+				double khashfrac=static_cast<double>((*i)->GetCalculatedKHashRateFromMetaHash())/static_cast<double>(GetAllClientsCalculatedKHashFromMeta());
+				int64 thisvalue=GetBlockValue(pindexPrev->nHeight+1, nFees)*khashfrac;
+				if(thisvalue>pblock->vtx[0].vout[0].nValue)
+				{
+					thisvalue=pblock->vtx[0].vout[0].nValue;
+				}
+				addressamountmap[ch]+=thisvalue;
+
+				pblock->vtx[0].vout[0].nValue-=thisvalue;
+				
+			}
+		}
+	}
+
+	for(std::map<uint160,int64>::const_iterator i=addressamountmap.begin(); i!=addressamountmap.end(); i++)
+	{
+		CTxOut out;
+		out.scriptPubKey << OP_DUP << OP_HASH160 << (*i).first << OP_EQUALVERIFY << OP_CHECKSIG;
+		out.nValue=(*i).second;
+		pblock->vtx[0].vout.push_back(out);
+	}
+}
+
+void BitcoinMinerRemoteServer::AddDistributionFromContributed(CBlock *pblock, CBlockIndex *pindexPrev, int64 nFees)
+{
+	CBigNum numerator=0;
+	CBigNum denominator=0;
+	std::map<uint160,uint256> hashes;
+	std::map<uint160,uint256> addressamountmap;
+
+	hashes=m_currenthashescontributed;
+	for(std::map<uint160,uint256>::const_iterator i=hashes.begin(); i!=hashes.end(); i++)
+	{
+		denominator+=CBigNum((*i).second);
+	}
+
+	// if we just solved the current block, the current hashes contributed will be empty, so we need to look at the old hashes contributed
+	if(denominator<=0)
+	{
+		hashes=m_previoushashescontributed;
+		for(std::map<uint160,uint256>::const_iterator i=hashes.begin(); i!=hashes.end(); i++)
+		{
+			denominator+=CBigNum((*i).second);
+		}
+	}
+
+	// now calculate and add distribution
+	if(denominator>0)
+	{
+		for(std::map<uint160,uint256>::const_iterator i=hashes.begin(); i!=hashes.end(); i++)
+		{
+			if((*i).second>0)
+			{
+				CBigNum thisvaluebn=GetBlockValue(pindexPrev->nHeight+1, nFees);
+				// * numerator (this clients hashes) / denominator (all clients hashes)
+				thisvaluebn*=CBigNum((*i).second);
+				thisvaluebn/=CBigNum(denominator);
+
+				// TODO - find better way to go from CBigNum to int64
+				int64 thisvalue;
+				std::istringstream istr(thisvaluebn.ToString());
+				istr >> thisvalue;
+				if(thisvalue>pblock->vtx[0].vout[0].nValue)
+				{
+					thisvalue=pblock->vtx[0].vout[0].nValue;
+				}
+
+				pblock->vtx[0].vout[0].nValue-=thisvalue;
+
+				CTxOut out;
+				out.scriptPubKey << OP_DUP << OP_HASH160 << (*i).first << OP_EQUALVERIFY << OP_CHECKSIG;
+				out.nValue=thisvalue;
+				pblock->vtx[0].vout.push_back(out);
+
+			}
+		}
+	}
+
+}
 
 void BitcoinMinerRemoteServer::BlockToJson(const CBlock *block, json_spirit::Object &obj)
 {
@@ -553,6 +635,99 @@ RemoteClientConnection *BitcoinMinerRemoteServer::GetOldestNonVerifiedMetaHashCl
 	return client;
 }
 
+void BitcoinMinerRemoteServer::LoadContributedHashes()
+{
+	CWalletDB walletdb;
+	std::string settingval("");
+	std::string::size_type pos=0;
+
+	m_previoushashescontributed.clear();
+	m_currenthashescontributed.clear();
+
+	if(walletdb.ReadSetting("rs_previoushashes",settingval)==true)
+	{
+
+		printf("Loading previous contributed hashes %s\n",settingval.c_str());
+
+		pos=0;
+		while(pos!=std::string::npos)
+		{
+			uint160 address;
+			uint256 count;
+
+			pos=settingval.find("*");
+			if(pos!=std::string::npos)
+			{
+				address.SetHex(settingval.substr(0,pos));
+				settingval.erase(0,pos+1);
+
+				pos=settingval.find("|");
+				if(pos==std::string::npos)
+				{
+					count.SetHex(settingval);
+				}
+				else
+				{
+					count.SetHex(settingval.substr(0,pos));
+					settingval.erase(0,pos+1);
+				}
+
+				if(address!=0 && count!=0)
+				{
+					m_previoushashescontributed[address]=count;
+				}
+
+			}
+		}
+
+	}
+
+	if(walletdb.ReadSetting("rs_currenthashes",settingval)==true)
+	{
+
+		printf("Loading current contributed hashes %s\n",settingval.c_str());
+		
+		pos=0;
+		while(pos!=std::string::npos)
+		{
+			uint160 address;
+			uint256 count;
+
+			pos=settingval.find("*");
+			if(pos!=std::string::npos)
+			{
+				//debug
+				//printf("Trying to set address to %s\n",settingval.substr(0,pos).c_str());
+				address.SetHex(settingval.substr(0,pos));
+				settingval.erase(0,pos+1);
+
+				pos=settingval.find("|");
+				if(pos==std::string::npos)
+				{
+					//debug
+					//printf("Trying to set count to %s\n",settingval.c_str());
+					count.SetHex(settingval);
+				}
+				else
+				{
+					//debug
+					//printf("Trying to set count to %s\n",settingval.substr(0,pos).c_str());
+					count.SetHex(settingval.substr(0,pos));
+					settingval.erase(0,pos+1);
+				}
+
+				if(address!=0 && count!=0)
+				{
+					m_currenthashescontributed[address]=count;
+				}
+
+			}
+		}
+
+	}
+
+}
+
 void BitcoinMinerRemoteServer::ReadBanned(const std::string &filename)
 {
 	std::vector<char> buff(129,0);
@@ -574,6 +749,35 @@ void BitcoinMinerRemoteServer::ReadBanned(const std::string &filename)
 		}
 		fclose(infile);
 	}
+}
+
+void BitcoinMinerRemoteServer::SaveContributedHashes()
+{
+	CWalletDB walletdb;
+
+	std::string saveval("");
+	for(std::map<uint160,uint256>::const_iterator i=m_previoushashescontributed.begin(); i!=m_previoushashescontributed.end(); i++)
+	{
+		if(i!=m_previoushashescontributed.begin())
+		{
+			saveval+="|";
+		}
+		saveval+=(*i).first.ToString()+"*"+(*i).second.ToString();
+	}
+	printf("Saving previous contributed hashes %s\n",saveval.c_str());
+	walletdb.WriteSetting("rs_previoushashes",saveval);
+
+	saveval="";
+	for(std::map<uint160,uint256>::const_iterator i=m_currenthashescontributed.begin(); i!=m_currenthashescontributed.end(); i++)
+	{
+		if(i!=m_currenthashescontributed.begin())
+		{
+			saveval+="|";
+		}
+		saveval+=(*i).first.ToString()+"*"+(*i).second.ToString();
+	}
+	printf("Saving current contributed hashes %s\n",saveval.c_str());
+	walletdb.WriteSetting("rs_currenthashes",saveval);
 }
 
 const bool BitcoinMinerRemoteServer::StartListen(const std::string &bindaddr, const std::string &bindport)
@@ -672,7 +876,6 @@ void BitcoinMinerRemoteServer::SendWork(RemoteClientConnection *client)
 	// we don't use CReserveKey for now because it removes the reservation when the key goes out of scope
 	CKey key;
 	key.MakeNewKey();
-	std::map<uint160,int64> addressamountmap;
 
 	CBlockIndex* pindexPrev = pindexBest;
 	unsigned int nBits = GetNextWorkRequired(pindexPrev);
@@ -744,38 +947,27 @@ void BitcoinMinerRemoteServer::SendWork(RemoteClientConnection *client)
 	pblock->nBits = nBits;
 	pblock->vtx[0].vout[0].nValue = GetBlockValue(pindexPrev->nHeight+1, nFees);
 
-	// add output for each connected client proportional to their khash
-	for(std::vector<RemoteClientConnection *>::const_iterator i=m_clients.begin(); i!=m_clients.end(); i++)
+	if(m_distributiontype=="connected")
 	{
-		uint160 ch=0;
-		if((*i)->GetRequestedRecipientAddress(ch))
-		{
-			if((*i)->GetCalculatedKHashRateFromMetaHash()>0 && GetAllClientsCalculatedKHashFromMeta()>0)
-			{
-				double khashfrac=static_cast<double>((*i)->GetCalculatedKHashRateFromMetaHash())/static_cast<double>(GetAllClientsCalculatedKHashFromMeta());
-				int64 thisvalue=GetBlockValue(pindexPrev->nHeight+1, nFees)*khashfrac;
-				if(thisvalue>pblock->vtx[0].vout[0].nValue)
-				{
-					thisvalue=pblock->vtx[0].vout[0].nValue;
-				}
-				addressamountmap[ch]+=thisvalue;
-
-				pblock->vtx[0].vout[0].nValue-=thisvalue;
-				
-			}
-		}
+		AddDistributionFromConnected(pblock,pindexPrev,nFees);
 	}
-
-	for(std::map<uint160,int64>::const_iterator i=addressamountmap.begin(); i!=addressamountmap.end(); i++)
+	else
 	{
-		CTxOut out;
-		out.scriptPubKey << OP_DUP << OP_HASH160 << (*i).first << OP_EQUALVERIFY << OP_CHECKSIG;
-		out.nValue=(*i).second;
-		pblock->vtx[0].vout.push_back(out);
+		AddDistributionFromContributed(pblock,pindexPrev,nFees);
 	}
 
 	printf("Sending block to remote client  nBits=%u\n",pblock->nBits);
 	pblock->print();
+
+	unsigned int blocksize=::GetSerializeSize(*pblock, SER_NETWORK);
+	if(blocksize > MAX_BLOCK_SIZE)
+	{
+		printf("ERROR - this block is too big to be accepted!\n");
+	}
+	else
+	{
+		printf("Serialized block is %u bytes\n",blocksize);
+	}
 
 	//
 	// Prebuild hash buffer
@@ -1364,6 +1556,13 @@ void BitcoinMinerRemote()
 										mh.m_besthash=besthash;
 										mh.m_besthashnonce=besthashnonce;
 										work->m_metahashes.push_back(mh);
+
+										// only accumulate hashes if client specified address to send to and we have successfully verified at least 1 metahash
+										// this will prevent a client from connecting and disconnecting rapidly to increase their hash count
+										if((*i)->GetRecipientAddress()!=0 && (*i)->GetVerifiedMetaHashCount()>0)
+										{
+											serv.AddContributedHashes((*i)->GetRecipientAddress(),BITCOINMINERREMOTE_HASHESPERMETA);
+										}
 									}
 									else
 									{
@@ -1410,6 +1609,7 @@ void BitcoinMinerRemote()
 								if(blockaccepted==true)
 								{
 									serv.GeneratedCount()++;
+									serv.ClearCurrentHashesContributed();
 								}
 								// send ALL clients new block to work on
 								serv.SendWorkToAllClients();

@@ -23,7 +23,21 @@ Remote miner server arguments
 	
 -remotepassword=xxxxx
 	Set a password to access the server.  The default is a blank password.
-
+	
+-distributiontype=connected|contributed
+	Sets method used to distribute bitcoins.  "connected" will distribute coins
+	only to those clients that were connected when the block being solved was
+	created.  The distribution is based on each connected clients calculated hash 
+	rate against the total hash rate at the time a new block is created. 
+	"contributed" will accrue all hashes sent to the server for a given address 
+	since the last generated block.  A client may freely disconnect and reconnect 
+	and will continue accumulating hashes to whatever address the client specified.
+	The distribution of coins with this method is based on the hashes accrued by 
+	each address against the total hashes accured by everyone.  The server will
+	save the values when it shuts down and load them back up on startup.
+	
+-resethashescontributed
+	Resets the count of hashes contributed from each address.
 
 
 *********************

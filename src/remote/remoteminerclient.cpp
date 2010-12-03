@@ -368,50 +368,17 @@ void RemoteMinerClient::HandleMessage(const RemoteMinerMessage &message)
 
 const bool RemoteMinerClient::MessageReady() const
 {
-	if(m_receivebuffer.size()>3 && m_receivebuffer[0]==REMOTEMINER_PROTOCOL_VERSION)
-	{
-		unsigned short messagesize=(m_receivebuffer[1] << 8) & 0xff00;
-		messagesize|=(m_receivebuffer[2]) & 0xff;
-
-		if(m_receivebuffer.size()>=3+messagesize)
-		{
-			return true;
-		}
-	}
-
-	return false;
+	return RemoteMinerMessage::MessageReady(m_receivebuffer);
 }
 
 const bool RemoteMinerClient::ProtocolError() const
 {
-	if(m_receivebuffer.size()>0 && m_receivebuffer[0]!=REMOTEMINER_PROTOCOL_VERSION)
-	{
-		return true;
-	}
-	else
-	{
-		return false;
-	}
+	return RemoteMinerMessage::ProtocolError(m_receivebuffer);
 }
 
 const bool RemoteMinerClient::ReceiveMessage(RemoteMinerMessage &message)
 {
-	if(MessageReady())
-	{
-		unsigned short messagesize=(m_receivebuffer[1] << 8) & 0xff00;
-		messagesize|=(m_receivebuffer[2]) & 0xff;
-
-		std::string objstr(m_receivebuffer.begin()+3,m_receivebuffer.begin()+3+messagesize);
-		json_spirit::Value value;
-		bool jsonread=json_spirit::read(objstr,value);
-		if(jsonread)
-		{
-			message=RemoteMinerMessage(value);
-		}
-		m_receivebuffer.erase(m_receivebuffer.begin(),m_receivebuffer.begin()+3+messagesize);
-		return jsonread;
-	}
-	return false;
+	return RemoteMinerMessage::ReceiveMessage(m_receivebuffer,message);
 }
 
 const std::string RemoteMinerClient::ReverseAddressHex(const uint160 address) const
@@ -457,6 +424,7 @@ void RemoteMinerClient::Run(const std::string &server, const std::string &port, 
 		if(IsConnected()==false)
 		{
 			std::cout << "Attempting to connect to " << server << ":" << port << std::endl;
+			Sleep(1000);
 			if(Connect(server,port))
 			{
 				m_gotserverhello=false;
@@ -469,10 +437,6 @@ void RemoteMinerClient::Run(const std::string &server, const std::string &port, 
 				besthashnonce=0;
 				std::cout << "Connected to " << server << ":" << port << std::endl;
 				SendClientHello(password,address);
-			}
-			else
-			{
-				Sleep(1000);
 			}
 		}
 		else
