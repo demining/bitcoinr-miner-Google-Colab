@@ -24,6 +24,7 @@
 
 #include <ctime>
 #include <cstring>
+#include <map>
 
 #ifdef _WIN32
 	#include <winsock2.h>
@@ -41,7 +42,7 @@ const int BITCOINMINERREMOTE_HASHESPERMETA=2000000;
 bool BitcoinMinerRemoteServer::m_wsastartup=false;
 #endif
 
-RemoteClientConnection::RemoteClientConnection(const SOCKET sock, sockaddr_storage &addr, const int addrlen):m_socket(sock),m_addr(addr),m_addrlen(addrlen),m_gotclienthello(false),m_connecttime(time(0)),m_lastactive(time(0)),m_lastverifiedmetahash(0)
+RemoteClientConnection::RemoteClientConnection(const SOCKET sock, sockaddr_storage &addr, const int addrlen):m_socket(sock),m_addr(addr),m_addrlen(addrlen),m_gotclienthello(false),m_connecttime(time(0)),m_lastactive(time(0)),m_lastverifiedmetahash(0),m_nextblockid(1)
 {
 	m_tempbuffer.resize(4096,0);
 }
@@ -247,6 +248,20 @@ const bool RemoteClientConnection::GetSentWorkByBlock(const std::vector<unsigned
 	return false;
 }
 
+const bool RemoteClientConnection::GetSentWorkByID(const int64 id, sentwork **work)
+{
+	for(std::vector<sentwork>::iterator i=m_sentwork.begin(); i!=m_sentwork.end(); i++)
+	{
+		if((*i).m_blockid==id)
+		{
+			*work=&(*i);
+			return true;
+		}
+	}
+
+	return false;
+}
+
 const bool RemoteClientConnection::MessageReady() const
 {
 	if(m_receivebuffer.size()>3 && m_receivebuffer[0]==REMOTEMINER_PROTOCOL_VERSION)
@@ -351,7 +366,7 @@ const bool RemoteClientConnection::SocketSend()
 	return sent;
 }
 
-BitcoinMinerRemoteServer::BitcoinMinerRemoteServer():m_bnExtraNonce(0)
+BitcoinMinerRemoteServer::BitcoinMinerRemoteServer():m_bnExtraNonce(0),m_startuptime(0),m_generatedcount(0)
 {
 #ifdef _WIN32
 	if(m_wsastartup==false)
@@ -572,6 +587,8 @@ const bool BitcoinMinerRemoteServer::StartListen(const std::string &bindaddr, co
 	hint.ai_socktype=SOCK_STREAM;
 	hint.ai_protocol=IPPROTO_TCP;
 	hint.ai_flags=AI_PASSIVE;
+
+	m_startuptime=time(0);
 	
 	rval=getaddrinfo(bindaddr.c_str(),bindport.c_str(),&hint,&result);
 	if(rval==0)
@@ -638,6 +655,8 @@ void BitcoinMinerRemoteServer::SendServerStatus()
 	obj.push_back(json_spirit::Pair("clients",static_cast<int64>(m_clients.size())));
 	obj.push_back(json_spirit::Pair("khashmeta",static_cast<int64>(GetAllClientsCalculatedKHashFromMeta())));
 	obj.push_back(json_spirit::Pair("khashbest",static_cast<int64>(GetAllClientsCalculatedKHashFromBest())));
+	obj.push_back(json_spirit::Pair("sessionstartuptime",static_cast<int64>(m_startuptime)));
+	obj.push_back(json_spirit::Pair("sessionblocksgenerated",static_cast<int64>(m_generatedcount)));
 	for(std::vector<RemoteClientConnection *>::iterator i=m_clients.begin(); i!=m_clients.end(); i++)
 	{
 		json_spirit::Object messobj(obj);
@@ -653,9 +672,12 @@ void BitcoinMinerRemoteServer::SendWork(RemoteClientConnection *client)
 	// we don't use CReserveKey for now because it removes the reservation when the key goes out of scope
 	CKey key;
 	key.MakeNewKey();
+	std::map<uint160,int64> addressamountmap;
+
 	CBlockIndex* pindexPrev = pindexBest;
 	unsigned int nBits = GetNextWorkRequired(pindexPrev);
 	CTransaction txNew;
+
 	txNew.vin.resize(1);
 	txNew.vin[0].prevout.SetNull();
 	txNew.vin[0].scriptSig << nBits << ++m_bnExtraNonce;
@@ -731,17 +753,25 @@ void BitcoinMinerRemoteServer::SendWork(RemoteClientConnection *client)
 			if((*i)->GetCalculatedKHashRateFromMetaHash()>0 && GetAllClientsCalculatedKHashFromMeta()>0)
 			{
 				double khashfrac=static_cast<double>((*i)->GetCalculatedKHashRateFromMetaHash())/static_cast<double>(GetAllClientsCalculatedKHashFromMeta());
-				CTxOut out;
-				out.scriptPubKey << OP_DUP << OP_HASH160 << ch << OP_EQUALVERIFY << OP_CHECKSIG;
-				out.nValue=GetBlockValue(pindexPrev->nHeight+1, nFees)*khashfrac;
-				if(out.nValue>pblock->vtx[0].vout[0].nValue)
+				int64 thisvalue=GetBlockValue(pindexPrev->nHeight+1, nFees)*khashfrac;
+				if(thisvalue>pblock->vtx[0].vout[0].nValue)
 				{
-					out.nValue=pblock->vtx[0].vout[0].nValue;
+					thisvalue=pblock->vtx[0].vout[0].nValue;
 				}
-				pblock->vtx[0].vout[0].nValue-=out.nValue;
-				pblock->vtx[0].vout.push_back(out);
+				addressamountmap[ch]+=thisvalue;
+
+				pblock->vtx[0].vout[0].nValue-=thisvalue;
+				
 			}
 		}
+	}
+
+	for(std::map<uint160,int64>::const_iterator i=addressamountmap.begin(); i!=addressamountmap.end(); i++)
+	{
+		CTxOut out;
+		out.scriptPubKey << OP_DUP << OP_HASH160 << (*i).first << OP_EQUALVERIFY << OP_CHECKSIG;
+		out.nValue=(*i).second;
+		pblock->vtx[0].vout.push_back(out);
 	}
 
 	printf("Sending block to remote client  nBits=%u\n",pblock->nBits);
@@ -766,7 +796,7 @@ void BitcoinMinerRemoteServer::SendWork(RemoteClientConnection *client)
 		uint256 hash1;
 		unsigned char pchPadding1[64];
 	};
-	char tmpbuf[sizeof(tmpworkspace)+16];
+	char tmpbuf[sizeof(tmpworkspace)+64];
 	tmpworkspace& tmp = *(tmpworkspace*)alignup<16>(tmpbuf);
 
 	tmp.block.nVersion       = pblock->nVersion;
@@ -804,6 +834,7 @@ void BitcoinMinerRemoteServer::SendWork(RemoteClientConnection *client)
 	EncodeBase64(midbuff,midstatestr);
 
 	json_spirit::Object obj;
+	obj.push_back(json_spirit::Pair("blockid",client->NextBlockID()));
 	obj.push_back(json_spirit::Pair("type",RemoteMinerMessage::MESSAGE_TYPE_SERVERSENDWORK));
 	obj.push_back(json_spirit::Pair("block",blockstr));
 	obj.push_back(json_spirit::Pair("midstate",midstatestr));
@@ -818,6 +849,7 @@ void BitcoinMinerRemoteServer::SendWork(RemoteClientConnection *client)
 
 	// save this block with the client connection so we can verify the metahashes generated by the client
 	RemoteClientConnection::sentwork sw;
+	sw.m_blockid=client->NextBlockID();
 	sw.m_key=key;
 	sw.m_block=blockbuff;
 	sw.m_midstate=midbuff;
@@ -829,6 +861,8 @@ void BitcoinMinerRemoteServer::SendWork(RemoteClientConnection *client)
 
 	// clear out old work sent to client (sent 15 minutes or older)
 	client->ClearOldSentWork(900);
+
+	client->NextBlockID()++;
 }
 
 void BitcoinMinerRemoteServer::SendWorkToAllClients()
@@ -1050,7 +1084,7 @@ const bool VerifyMetaHash(const RemoteClientConnection::sentwork &work)
 
 }
 
-const bool VerifyFoundHash(RemoteClientConnection *client, const std::vector<unsigned char> &block, const unsigned int foundnonce)
+const bool VerifyFoundHash(RemoteClientConnection *client, const int64 blockid, const std::vector<unsigned char> &block, const unsigned int foundnonce, bool &accepted)
 {
 	const unsigned int SHA256InitState[8] ={0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
 	
@@ -1063,6 +1097,9 @@ const bool VerifyFoundHash(RemoteClientConnection *client, const std::vector<uns
 	unsigned char *midbuffptr=alignup<16>(midbuff);
 	unsigned char *blockbuffptr=alignup<16>(blockbuff);
 	unsigned int *nonce=(unsigned int *)(blockbuffptr+12);
+	bool foundwork=false;
+
+	accepted=false;
 
 	for(int i=0; i<4; i++)
 	{
@@ -1079,7 +1116,18 @@ const bool VerifyFoundHash(RemoteClientConnection *client, const std::vector<uns
 	}
 	
 	RemoteClientConnection::sentwork *work;
-	if(client->GetSentWorkByBlock(block,&work))
+
+	// use GetSentWorkByID when blockid is not 0
+	if(blockid!=0)
+	{
+		foundwork=client->GetSentWorkByID(blockid,&work);
+	}
+	else
+	{
+		foundwork=client->GetSentWorkByBlock(block,&work);
+	}
+
+	if(foundwork==true)
 	{
 		
 		if(work->m_pblock)
@@ -1116,7 +1164,13 @@ const bool VerifyFoundHash(RemoteClientConnection *client, const std::vector<uns
 
                         // Process this block the same as if we had received it from another node
                         if (!ProcessBlock(NULL, work->m_pblock))
+						{
                             printf("ERROR in VerifyFoundHash, ProcessBlock, block not accepted\n");
+						}
+						else	// block accepted
+						{
+							accepted=true;
+						}
                     	
 						// pblock is deleted by ProcessBlock, so we need to zero the pointer in work so it won't be deleted twice
 						work->m_pblock=0;
@@ -1167,6 +1221,7 @@ void BitcoinMinerRemote()
 	time_t laststatusbarupdate=time(0);
 	time_t lastverified=time(0);
 	time_t lastserverstatus=time(0);
+	bool blockaccepted=false;
 
 	if(mapArgs.count("-remotebindaddr"))
 	{
@@ -1245,13 +1300,20 @@ void BitcoinMinerRemote()
 						}
 						else if(type==RemoteMinerMessage::MESSAGE_TYPE_CLIENTMETAHASH)
 						{
+							int64 blockid=0;
 							std::vector<unsigned char> block;
 							std::vector<unsigned char> digest;
 							unsigned int nonce=0;
 							uint256 besthash=~0;
 							unsigned int besthashnonce=0;
+							bool foundwork=false;
 
-							json_spirit::Value val=json_spirit::find_value(message.GetValue().get_obj(),"block");
+							json_spirit::Value val=json_spirit::find_value(message.GetValue().get_obj(),"blockid");
+							if(val.type()==json_spirit::int_type)
+							{
+								blockid=val.get_int();
+							}
+							val=json_spirit::find_value(message.GetValue().get_obj(),"block");
 							if(val.type()==json_spirit::str_type)
 							{
 								BitcoinMinerRemoteServer::DecodeBase64(val.get_str(),block);
@@ -1277,7 +1339,18 @@ void BitcoinMinerRemote()
 								besthashnonce=val.get_int64();
 							}
 							RemoteClientConnection::sentwork *work;
-							if((*i)->GetSentWorkByBlock(block,&work))
+
+							// use GetSentWorkByID when blockid is not 0
+							if(blockid!=0)
+							{
+								foundwork=(*i)->GetSentWorkByID(blockid,&work);
+							}
+							else
+							{
+								foundwork=(*i)->GetSentWorkByBlock(block,&work);
+							}
+
+							if(foundwork==true)
 							{
 								if(work->CheckNonceOverlap(nonce,BITCOINMINERREMOTE_HASHESPERMETA)==false && besthashnonce>=nonce && besthashnonce<nonce+BITCOINMINERREMOTE_HASHESPERMETA)
 								{
@@ -1311,10 +1384,17 @@ void BitcoinMinerRemote()
 						{
 							SetThreadPriority(THREAD_PRIORITY_NORMAL);
 
+							int64 blockid=0;
 							std::vector<unsigned char> block;
 							int64 nonce=0;
-							
-							json_spirit::Value val=json_spirit::find_value(message.GetValue().get_obj(),"block");
+							bool foundwork=false;
+
+							json_spirit::Value val=json_spirit::find_value(message.GetValue().get_obj(),"blockid");
+							if(val.type()==json_spirit::int_type)
+							{
+								blockid=val.get_int();
+							}
+							val=json_spirit::find_value(message.GetValue().get_obj(),"block");
 							if(val.type()==json_spirit::str_type)
 							{
 								BitcoinMinerRemoteServer::DecodeBase64(val.get_str(),block);
@@ -1325,8 +1405,12 @@ void BitcoinMinerRemote()
 								nonce=val.get_int();
 							}
 							
-							if(VerifyFoundHash((*i),block,nonce)==true)
+							if(VerifyFoundHash((*i),blockid,block,nonce,blockaccepted)==true)
 							{
+								if(blockaccepted==true)
+								{
+									serv.GeneratedCount()++;
+								}
 								// send ALL clients new block to work on
 								serv.SendWorkToAllClients();
 							}

@@ -92,7 +92,7 @@ void BitcoinMinerGPU()
 		if(fShutdown)
 			return;
 
-		//while(vNodes.empty() || IsInitialBlockDownload())
+		while(vNodes.empty() || IsInitialBlockDownload())
 		{
 			Sleep(1000);
 			if(fShutdown)

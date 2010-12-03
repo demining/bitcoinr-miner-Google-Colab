@@ -35,7 +35,7 @@ class RemoteMinerClient
 {
 public:
 	RemoteMinerClient();
-	~RemoteMinerClient();
+	virtual ~RemoteMinerClient();
 
 	void Run(const std::string &server, const std::string &port, const std::string &password, const std::string &address);
 
@@ -61,11 +61,14 @@ private:
 	const bool DecodeBase64(const std::string &encoded, std::vector<unsigned char> &decoded) const;
 
 	void SendClientHello(const std::string &password, const std::string &address);
-	void SendMetaHash(const std::vector<unsigned char> &block, const unsigned int startnonce, const std::vector<unsigned char> &digest, const uint256 &besthash, const unsigned int besthashnonce);
+	void SendMetaHash(const int64 blockid, const std::vector<unsigned char> &block, const unsigned int startnonce, const std::vector<unsigned char> &digest, const uint256 &besthash, const unsigned int besthashnonce);
 	void SendWorkRequest();
-	void SendFoundHash(const std::vector<unsigned char> &block, const unsigned int nonce);
+	void SendFoundHash(const int64 blockid, const std::vector<unsigned char> &block, const unsigned int nonce);
 
 	void HandleMessage(const RemoteMinerMessage &message);
+
+	const bool FindGenerationAddressInBlock(const uint160 address, json_spirit::Object &obj, double &amount) const;
+	const std::string ReverseAddressHex(const uint160 address) const;
 
 	inline void SHA256Transform(void* pstate, void* pinput, const void* pinit)
 	{
@@ -88,6 +91,8 @@ private:
 		return blocks;
 	}
 
+	uint160 m_address160;
+
 	bool m_gotserverhello;
 	bool m_havework;
 	std::vector<unsigned char> m_metahashstartblock;
@@ -95,10 +100,12 @@ private:
 	std::vector<unsigned char> m_metahash;
 	std::vector<unsigned char>::size_type m_metahashpos;
 
+	int64 m_nextblockid;
 	uint256 m_nexttarget;
 	std::vector<unsigned char> m_nextmidstate;
 	std::vector<unsigned char> m_nextblock;
 
+	int64 m_currentblockid;
 	uint256 m_currenttarget;
 	unsigned char m_currentmidbuff[256];
 	unsigned char m_currentblockbuff[256];

@@ -26,7 +26,7 @@
 
 extern const int BITCOINMINERREMOTE_THREADINDEX;
 extern const int BITCOINMINERREMOTE_HASHESPERMETA;
-#define BITCOINMINERREMOTE_SERVERVERSIONSTR "1.0.0"
+#define BITCOINMINERREMOTE_SERVERVERSIONSTR "1.1.0"
 
 void ThreadBitcoinMinerRemote(void* parg);
 void BitcoinMinerRemote();
@@ -72,6 +72,8 @@ public:
 
 	const std::string GetAddress(const bool withport=true) const;
 
+	int64 &NextBlockID()											{ return m_nextblockid; }
+
 	void ClearOldSentWork(const int sec);
 
 	struct metahash
@@ -89,6 +91,7 @@ public:
 	{
 		sentwork():m_pblock(0)			{ }
 		
+		int64 m_blockid;
 		time_t m_senttime;
 		std::vector<unsigned char> m_block;
 		std::vector<unsigned char> m_midstate;
@@ -114,6 +117,7 @@ public:
 	const std::vector<sentwork> &GetSentWork() const		{ return m_sentwork; }
 	std::vector<sentwork> &GetSentWork()					{ return m_sentwork; }
 	const bool GetSentWorkByBlock(const std::vector<unsigned char> &block, sentwork **work);
+	const bool GetSentWorkByID(const int64 id, sentwork **work);
 	const bool GetNewestSentWorkWithMetaHash(sentwork &work) const;
 	void SetWorkVerified(sentwork &work);
 
@@ -133,6 +137,8 @@ private:
 	time_t m_lastverifiedmetahash;
 	bool m_gotclienthello;
 	uint160 m_recipientaddress;
+
+	int64 m_nextblockid;
 
 };
 
@@ -160,6 +166,8 @@ public:
 	
 	RemoteClientConnection *GetOldestNonVerifiedMetaHashClient();
 
+	int64 &GeneratedCount()									{ return m_generatedcount; }
+
 private:
 	void BlockToJson(const CBlock *block, json_spirit::Object &obj);
 	void ReadBanned(const std::string &filename);
@@ -172,6 +180,8 @@ private:
 	std::vector<SOCKET> m_listensockets;
 	std::vector<RemoteClientConnection *> m_clients;
 	std::set<std::string> m_banned;
+	time_t m_startuptime;
+	int64 m_generatedcount;
 
 };
 
