@@ -1,0 +1,13 @@
+Source: bitcoinr-miner
+Section: network
+Priority: extra
+Maintainer: Mario Oyorzabal Salgado <tuxsoul@tuxsoul.com>
+Build-Depends: debhelper (>= 5), cmake
+Standards-Version: 3.7.2
+
+Package: bitcoinr-miner
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: pooled remote mining bitcoint client/server
+ pooled remote mining bitcoin client/server.
+
