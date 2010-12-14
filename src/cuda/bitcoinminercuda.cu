@@ -244,7 +244,7 @@ __global__ void cuda_process(cuda_in *in, cuda_out *out, const unsigned int loop
 
 void cuda_process_helper(cuda_in *in, cuda_out *out, const int unsigned loops, const unsigned int bits, const int grid, const int threads)
 {
-	cuda_process<<<grid,threads>>>(in,out,loops,bits);
+	cuda_process<<<grid,threads>>>(in,out,loops,bits-1);
 }
 
 #endif	// _BITCOIN_MINER_CUDA_

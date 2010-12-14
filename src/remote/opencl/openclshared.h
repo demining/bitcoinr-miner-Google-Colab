@@ -16,27 +16,34 @@
     51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 **/
 
-#ifndef _remote_bitcoin_headers_
-#define _remote_bitcoin_headers_
+#ifndef _remote_opencl_shared_
+#define _remote_opencl_shared_
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <windows.h>
-#endif
-#include <boost/thread.hpp>
-#include <boost/date_time/posix_time/posix_time_types.hpp>
-#include <boost/date_time/gregorian/gregorian_types.hpp>
-#include <cassert>
-#include <map>
-#include <vector>
-#include <string>
-#include <openssl/sha.h>
-#include <openssl/ripemd.h>
-#include "../serialize.h"
-#include "../uint256.h"
-#include "../util.h"
-#include "../bignum.h"
-#include "../base58.h"
-#include "../strlcpy.h"
+#ifdef _BITCOIN_MINER_OPENCL_
 
-#endif	// _remote_bitcoin_headers_
+#include <CL/opencl.h>
+
+typedef struct
+{
+	cl_uint m_AH[8];
+	cl_uint m_merkle;
+	cl_uint m_ntime;
+	cl_uint m_nbits;
+	cl_uint m_nonce;
+}remote_opencl_in;
+
+typedef struct
+{
+	cl_uint m_bestnonce;
+	cl_uint m_bestAH[8];
+//debug
+	cl_uint m_nonce;
+	cl_uint m_myid;
+	cl_uint m_loops;
+}remote_opencl_out;
+
+void remote_cuda_process_helper(remote_opencl_in *in, remote_opencl_out *out, unsigned char *metahash, const unsigned int loops, const unsigned int bits, const int grid, const int threads);
+
+#endif	// _BITCOIN_MINER_OPENCL_
+
+#endif	// _remote_opencl_shared_
