@@ -1,13 +1,23 @@
 Source: bitcoinr-miner
-Section: network
-Priority: extra
+Section: net
+Priority: optional
 Maintainer: Mario Oyorzabal Salgado <tuxsoul@tuxsoul.com>
-Build-Depends: debhelper (>= 5), cmake
+Build-Depends: debhelper (>= 5),
+               quilt,
+               cmake,
+               libboost1.35-dev,
+               libssl-dev,
+               libdb-dev (>= 4.0),
 Standards-Version: 3.7.2
 
-Package: bitcoinr-miner
+Package: btcrm-server
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: pooled remote mining bitcoint client/server
- pooled remote mining bitcoin client/server.
+Description: pooled remote mining bitcoin server
+ pooled remote mining bitcoin server.
 
+Package: btcrm-client
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: pooled remote mining bitcoin client
+ pooled remote mining bitcoin client.
