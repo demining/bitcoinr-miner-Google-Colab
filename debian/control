@@ -8,6 +8,7 @@ Build-Depends: debhelper (>= 5),
                libboost1.35-dev,
                libssl-dev,
                libdb-dev (>= 4.0),
+               libdb++-dev (>=4.0),
 Standards-Version: 3.7.2
 
 Package: btcrm-server

@@ -1,0 +1,11 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,7 +2,7 @@
+ 
+ PROJECT(bitcoin)
+ 
+-OPTION(BITCOIN_ENABLE_CUDA "Enable CUDA miner" ON)
++OPTION(BITCOIN_ENABLE_CUDA "Enable CUDA miner" OFF)
+ OPTION(BITCOIN_ENABLE_OPENCL "Enable OpenCL miner" OFF)
+ OPTION(BITCOIN_ENABLE_REMOTE_SERVER "Enable remote miner server" ON)
+ OPTION(BITCOIN_BUILD_GUI "Build GUI (bitcoin)" ON)

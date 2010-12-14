@@ -1,0 +1,5 @@
+cmake_change_version.diff
+cmake_disable_cuda.diff
+cmake_disable_bitcoin_gui.diff
+cmake_disable_bitcoin_daemon.diff
+remotebitcoinheaders_changeto_headers.diff
