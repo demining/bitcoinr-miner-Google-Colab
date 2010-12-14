@@ -27,7 +27,7 @@
 
 extern const int BITCOINMINERREMOTE_THREADINDEX;
 extern const int BITCOINMINERREMOTE_HASHESPERMETA;
-#define BITCOINMINERREMOTE_SERVERVERSIONSTR "1.2.0"
+#define BITCOINMINERREMOTE_SERVERVERSIONSTR "1.2.1"
 
 void ThreadBitcoinMinerRemote(void* parg);
 void BitcoinMinerRemote();
@@ -144,6 +144,42 @@ private:
 
 	int64 m_nextblockid;
 	int64 m_verifiedmetahashcount;
+
+};
+
+class MetaHashVerifier
+{
+public:
+	MetaHashVerifier();
+	~MetaHashVerifier();
+
+	void Start(RemoteClientConnection *client, const RemoteClientConnection::sentwork &work);
+	void Step(const int hashes=100000);
+
+	RemoteClientConnection *GetClient()				{ return m_client; }
+	void ClearClient()								{ m_client=0; }
+
+	const bool Done() const							{ return m_done; }
+	const bool Verified() const						{ return m_verified; }
+
+private:
+
+	bool m_done;
+	bool m_verified;
+	uint256 m_tempbuff[3];
+	uint256 m_hashbuff[3];
+	uint256 *m_temphash;
+	uint256 *m_hash;
+	unsigned char m_midbuff[256];
+	unsigned char m_blockbuff[256];
+	unsigned char *m_midbuffptr;
+	unsigned char *m_blockbuffptr;
+	unsigned int *m_nonce;
+	unsigned int m_startnonce;
+	std::vector<unsigned char> m_digest;
+	std::vector<unsigned char> m_metahash;
+	std::vector<unsigned char>::size_type m_metahashpos;
+	RemoteClientConnection *m_client;
 
 };
 

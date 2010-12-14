@@ -45,17 +45,17 @@ Remote miner server arguments
 *********************
 Remote miner client arguments
 
--server x.x.x.x
+-server=x.x.x.x
 	The address of the server to connect to.  The default is 127.0.0.1.
 	
--port xxxxx
+-port=xxxxx
 	The port of the server.  The default is 8335.
 	
--password xxxxx
+-password=xxxxx
 	The password to use when connecting to the server.  The default is a blank 
 	password.
 	
--address xxxxxxx
+-address=xxxxxxx
 	The bitcoin address you want generated coins sent to.  The default is blank.  
 	A blank address will make the client's share of generated coins be kept by 
 	the server.
@@ -86,10 +86,10 @@ CUDA miner arguments
 	tuning hash rate.
 
 -port=X
-	Specifies the port that bitcoin will listen on.
+	Specifies the port that bitcoin will listen on.  (When run in GUI or daemon)
 
 -rpcport=X
-	Specifies the port that the rpc server will listen on.
+	Specifies the port that the rpc server will listen on.  (When run in GUI or daemon)
 
 
 
@@ -123,7 +123,7 @@ OpenCL miner arguments
 	tuning hash rate.
 
 -port=X
-	Specifies the port that bitcoin will listen on.
+	Specifies the port that bitcoin will listen on.  (When run in GUI or daemon)
 
 -rpcport=X
-	Specifies the port that the rpc server will listen on.
+	Specifies the port that the rpc server will listen on.  (When run in GUI or daemon)

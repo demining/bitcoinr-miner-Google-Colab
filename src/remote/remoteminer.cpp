@@ -237,7 +237,7 @@ const bool RemoteClientConnection::GetNewestSentWorkWithMetaHash(sentwork &work)
 
 const bool RemoteClientConnection::GetSentWorkByBlock(const std::vector<unsigned char> &block, sentwork **work)
 {
-	for(std::vector<sentwork>::iterator i=m_sentwork.begin(); i!=m_sentwork.end(); i++)
+	for(std::vector<sentwork>::reverse_iterator i=m_sentwork.rbegin(); i!=m_sentwork.rend(); i++)
 	{
 		if((*i).m_block==block)
 		{
@@ -251,7 +251,7 @@ const bool RemoteClientConnection::GetSentWorkByBlock(const std::vector<unsigned
 
 const bool RemoteClientConnection::GetSentWorkByID(const int64 id, sentwork **work)
 {
-	for(std::vector<sentwork>::iterator i=m_sentwork.begin(); i!=m_sentwork.end(); i++)
+	for(std::vector<sentwork>::reverse_iterator i=m_sentwork.rbegin(); i!=m_sentwork.rend(); i++)
 	{
 		if((*i).m_blockid==id)
 		{
@@ -334,6 +334,85 @@ const bool RemoteClientConnection::SocketSend()
 	}
 	return sent;
 }
+
+
+
+
+
+MetaHashVerifier::MetaHashVerifier():m_done(false),m_client(0)
+{
+
+}
+
+MetaHashVerifier::~MetaHashVerifier()
+{
+	
+}
+
+void MetaHashVerifier::Start(RemoteClientConnection *client, const RemoteClientConnection::sentwork &work)
+{
+	m_temphash=alignup<16>(m_tempbuff);
+	m_hash=alignup<16>(m_hashbuff);
+	m_midbuffptr=alignup<16>(m_midbuff);
+	m_blockbuffptr=alignup<16>(m_blockbuff);
+	m_nonce=(unsigned int *)(m_blockbuffptr+12);
+	m_metahash.clear();
+	m_metahash.resize(BITCOINMINERREMOTE_HASHESPERMETA,0);
+	m_metahashpos=0;
+
+	m_client=client;
+
+	for(int i=0; i<3; i++)
+	{
+		m_tempbuff[i]=0;
+		m_hashbuff[i]=0;
+	}
+	*m_temphash=0;
+	*m_hash=0;
+
+	std::vector<RemoteClientConnection::metahash>::size_type mhpos=work.m_metahashes.size()-1;
+
+	FormatHashBlocks(m_temphash,sizeof(uint256));
+	for(int i=0; i<64/4; i++)
+	{
+		((unsigned int*)m_temphash)[i] = CryptoPP::ByteReverse(((unsigned int*)m_temphash)[i]);
+	}
+
+	::memcpy(m_blockbuffptr,&(work.m_block[0]),work.m_block.size());
+	::memcpy(m_midbuffptr,&(work.m_midstate[0]),work.m_midstate.size());
+
+	m_startnonce=work.m_metahashes[mhpos].m_startnonce;
+	m_digest=work.m_metahashes[mhpos].m_metahash;
+
+	m_done=false;
+
+}
+
+void MetaHashVerifier::Step(const int hashes)
+{
+	const unsigned int SHA256InitState[8] ={0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+	const unsigned int startpos=m_metahashpos;
+
+	for((*m_nonce)=m_startnonce+m_metahashpos; (*m_nonce)<(m_startnonce+startpos+hashes) && (*m_nonce)<m_startnonce+BITCOINMINERREMOTE_HASHESPERMETA; (*m_nonce)++,m_metahashpos++)
+	{
+		SHA256Transform(m_temphash,m_blockbuffptr,m_midbuffptr);
+		SHA256Transform(m_hash,m_temphash,SHA256InitState);
+		
+		m_metahash[m_metahashpos]=((unsigned char *)m_hash)[0];
+	}
+
+	if(m_metahashpos>=m_metahash.size())
+	{
+		std::vector<unsigned char> digest(SHA256_DIGEST_LENGTH,0);
+		SHA256(&m_metahash[0],m_metahash.size(),&digest[0]);
+		
+		m_verified=(digest==m_digest);
+		m_done=true;
+	}
+}
+
+
+
 
 BitcoinMinerRemoteServer::BitcoinMinerRemoteServer():m_bnExtraNonce(0),m_startuptime(0),m_generatedcount(0),m_distributiontype("connected")
 {
@@ -429,6 +508,7 @@ void BitcoinMinerRemoteServer::AddDistributionFromContributed(CBlock *pblock, CB
 	std::map<uint160,uint256> hashes;
 	std::map<uint160,uint256> addressamountmap;
 
+	// add up all contributing hashes
 	hashes=m_currenthashescontributed;
 	for(std::map<uint160,uint256>::const_iterator i=hashes.begin(); i!=hashes.end(); i++)
 	{
@@ -453,6 +533,7 @@ void BitcoinMinerRemoteServer::AddDistributionFromContributed(CBlock *pblock, CB
 			if((*i).second>0)
 			{
 				CBigNum thisvaluebn=GetBlockValue(pindexPrev->nHeight+1, nFees);
+				// do it this way so we don't need any decimal numbers
 				// * numerator (this clients hashes) / denominator (all clients hashes)
 				thisvaluebn*=CBigNum((*i).second);
 				thisvaluebn/=CBigNum(denominator);
@@ -696,22 +777,16 @@ void BitcoinMinerRemoteServer::LoadContributedHashes()
 			pos=settingval.find("*");
 			if(pos!=std::string::npos)
 			{
-				//debug
-				//printf("Trying to set address to %s\n",settingval.substr(0,pos).c_str());
 				address.SetHex(settingval.substr(0,pos));
 				settingval.erase(0,pos+1);
 
 				pos=settingval.find("|");
 				if(pos==std::string::npos)
 				{
-					//debug
-					//printf("Trying to set count to %s\n",settingval.c_str());
 					count.SetHex(settingval);
 				}
 				else
 				{
-					//debug
-					//printf("Trying to set count to %s\n",settingval.substr(0,pos).c_str());
 					count.SetHex(settingval.substr(0,pos));
 					settingval.erase(0,pos+1);
 				}
@@ -1226,56 +1301,6 @@ const bool VerifyBestHash(const RemoteClientConnection::sentwork &work, const ui
 	return (hash==besthash);
 }
 
-const bool VerifyMetaHash(const RemoteClientConnection::sentwork &work)
-{
-	const unsigned int SHA256InitState[8] ={0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-	
-	uint256 tempbuff[4];
-	uint256 &temphash=*alignup<16>(tempbuff);
-	uint256 hashbuff[4];
-	uint256 &hash=*alignup<16>(hashbuff);
-	unsigned char midbuff[256]={0};
-	unsigned char blockbuff[256]={0};
-	unsigned char *midbuffptr=alignup<16>(midbuff);
-	unsigned char *blockbuffptr=alignup<16>(blockbuff);
-	unsigned int *nonce=(unsigned int *)(blockbuffptr+12);
-	std::vector<unsigned char> metahash(BITCOINMINERREMOTE_HASHESPERMETA,0);
-	std::vector<unsigned char>::size_type metahashpos=0;
-
-	for(int i=0; i<4; i++)
-	{
-		tempbuff[i]=0;
-		hashbuff[i]=0;
-	}
-	temphash=0;
-	hash=0;
-	
-	std::vector<RemoteClientConnection::metahash>::size_type mhpos=work.m_metahashes.size()-1;
-
-	FormatHashBlocks(&temphash,sizeof(temphash));
-	for(int i=0; i<64/4; i++)
-	{
-		((unsigned int*)&temphash)[i] = CryptoPP::ByteReverse(((unsigned int*)&temphash)[i]);
-	}
-	
-	::memcpy(blockbuffptr,&(work.m_block[0]),work.m_block.size());
-	::memcpy(midbuffptr,&(work.m_midstate[0]),work.m_midstate.size());
-	
-	for((*nonce)=work.m_metahashes[mhpos].m_startnonce; (*nonce)<work.m_metahashes[mhpos].m_startnonce+BITCOINMINERREMOTE_HASHESPERMETA; (*nonce)++,metahashpos++)
-	{
-		SHA256Transform(&temphash,blockbuffptr,midbuffptr);
-		SHA256Transform(&hash,&temphash,SHA256InitState);
-		
-		metahash[metahashpos]=((unsigned char *)&hash)[0];
-	}
-	
-	std::vector<unsigned char> digest(SHA256_DIGEST_LENGTH,0);
-	SHA256(&metahash[0],metahash.size(),&digest[0]);
-	
-	return (digest==work.m_metahashes[mhpos].m_metahash);
-
-}
-
 const bool VerifyFoundHash(RemoteClientConnection *client, const int64 blockid, const std::vector<unsigned char> &block, const unsigned int foundnonce, bool &accepted)
 {
 	const unsigned int SHA256InitState[8] ={0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
@@ -1414,6 +1439,7 @@ void BitcoinMinerRemote()
 	time_t lastverified=time(0);
 	time_t lastserverstatus=time(0);
 	bool blockaccepted=false;
+	MetaHashVerifier metahashverifier;
 
 	if(mapArgs.count("-remotebindaddr"))
 	{
@@ -1668,23 +1694,39 @@ void BitcoinMinerRemote()
 		}
 
 		// check metahash of a client every 10 seconds
-		if(difftime(time(0),lastverified)>=10)
+		if(serv.Clients().size()>0 && difftime(time(0),lastverified)>=10)
 		{
 			RemoteClientConnection *client=serv.GetOldestNonVerifiedMetaHashClient();
-			if(client)
+
+			if(metahashverifier.GetClient()!=client || (client!=0 && metahashverifier.GetClient()==0))
 			{
 				RemoteClientConnection::sentwork work;
 				if(client->GetNewestSentWorkWithMetaHash(work))
 				{
-					if(VerifyMetaHash(work)==false)
-					{
-						printf("Client %s failed metahash verification!\n",client->GetAddress().c_str());
-					}
-					client->SetWorkVerified(work);
+					metahashverifier.Start(client,work);
 				}
-				client->SetLastVerifiedMetaHash(lastverified);
 			}
-			lastverified=time(0);
+
+			if(client!=0 && metahashverifier.GetClient()==client && metahashverifier.Done()==false)
+			{
+				metahashverifier.Step();
+			}
+
+			if(client!=0 && metahashverifier.GetClient()==client && metahashverifier.Done()==true)
+			{
+				if(metahashverifier.Verified()==true)
+				{
+					printf("Client %s passed metahash verification\n",client->GetAddress().c_str());
+				}
+				else
+				{
+					printf("Client %s failed metahash verification\n",client->GetAddress().c_str());
+				}
+
+				metahashverifier.ClearClient();
+				lastverified=time(0);
+			}
+
 		}
 		
 		// send server status to all connected clients every minute
