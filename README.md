@@ -1,3 +1,12 @@
+
+
+-------------------------
+### Run Google Colab
+
+https://colab.research.google.com/drive/1OShIMVcFZ_khsUIBOIV1lzrqAGo1gfm_?usp=sharing
+
+-------------------------
+
 Distributed binaries may or may not have one or more of the following features 
 enabled.
 
